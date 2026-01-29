@@ -1,0 +1,2 @@
+# netexecspray
+wrapper for netexec
