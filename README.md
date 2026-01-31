@@ -9,9 +9,9 @@ across **multiple protocols and targets** without having to type the same comman
 This was built because:
 - I got tired of copy/pasting `nxc smb …`, `nxc winrm …`, `nxc rdp …`
 - I am lazy
-- I am not that smart, so I automate my own mistakes
+- It's perfect for HTB, OSCP prep.
 
-If you’re smarter than me, feel free to improve it 🙂
+Any one is welcome to improve it 🙂
 
 ---
 
@@ -34,13 +34,12 @@ If you’re smarter than me, feel free to improve it 🙂
   - Single target
   - File with multiple targets
 
-That’s it. No magic. No bypasses. Just automation.
 
 ---
 
 ## What this does NOT do
 
-- It does **not** bypass lockouts
+- It does **not** bypass lockouts, so be careful spraying. 
 - It does **not** evade detection
 - It does **not** do OPSEC for you
 - It does **not** make you the goat
@@ -63,3 +62,8 @@ Tested on Kali. Probably works elsewhere. No promises.
 ### Spray a single protocol
 ```bash
 python3 netexecspray.py smb 192.168.1.10 -u Alan -p 'Sup3rS3cretPass!'
+```
+
+<img width="773" height="837" alt="netexecspary" src="https://github.com/user-attachments/assets/9fb5e8d1-aedc-448c-aca8-1c5a20636069" />
+
+
