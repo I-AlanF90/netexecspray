@@ -6,6 +6,15 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+# =====================
+# ANSI COLORS
+# =====================
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
 ALL_PROTOCOLS = [
     "ftp",
     "smb",
@@ -108,8 +117,18 @@ def main():
         action="store_true",
         help="Explain common failure reasons"
     )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output"
+    )
 
     args = parser.parse_args()
+
+    # Disable colors if requested
+    global GREEN, YELLOW, RED, BOLD, RESET
+    if args.no_color:
+        GREEN = YELLOW = RED = BOLD = RESET = ""
 
     if not args.user and not args.userfile:
         print("[-] Must supply -u or -U")
@@ -142,7 +161,7 @@ def main():
 
     for user in users:
         for proto in protocols:
-            print(f"[+] === Protocol: {proto} | User: {user} ===")
+            print(f"{YELLOW}[+] === Protocol: {proto} | User: {user} ==={RESET}")
             for target in targets:
                 result = run_nxc(
                     proto,
@@ -160,7 +179,7 @@ def main():
                 if extract_success(output):
                     entry = f"{proto} {target} {user}:{args.password}"
                     valid_creds.append(entry)
-                    print(f"[!] VALID → {entry}")
+                    print(f"{GREEN}{BOLD}[!] VALID → {entry}{RESET}")
 
                 elif args.explain:
                     reasons = explain_failure(output)
@@ -170,12 +189,21 @@ def main():
                 if args.delay > 0:
                     time.sleep(args.delay)
 
+    print("\n" + "=" * 60)
+
     if valid_creds:
         with open(credsfile, "w") as f:
             f.write("\n".join(valid_creds))
-        print(f"\n[+] Valid credentials saved to {credsfile}")
+
+        print(f"{GREEN}{BOLD}[+] VALID CREDENTIALS FOUND ({len(valid_creds)}){RESET}")
+        for cred in valid_creds:
+            print(f"{GREEN}  → {cred}{RESET}")
+
+        print(f"\n[+] Saved to: {credsfile}")
     else:
-        print("\n[-] No valid credentials found")
+        print(f"{RED}{BOLD}[-] No valid credentials found{RESET}")
+
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
