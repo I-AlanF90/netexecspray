@@ -52,7 +52,8 @@ It just saves time.
 
 - Python 3
 - NetExec (`nxc`) installed and in your PATH
-
+# Optional (for validation features)
+xfreerdp
 Tested on Kali. Probably works elsewhere. No promises.
 
 ---
