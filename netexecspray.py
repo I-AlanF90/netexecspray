@@ -54,7 +54,7 @@ def validate_access(proto, target, user, password):
     try:
         if proto == "rdp":
             cmd = [
-                "xfreerdp",
+                "xfreerdp3",
                 f"/u:{user}",
                 f"/p:{password}",
                 f"/v:{target}",
